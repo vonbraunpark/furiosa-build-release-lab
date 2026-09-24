@@ -28,6 +28,7 @@ jobs:
             ca-certificates \
             cmake \
             dpkg-dev \
+            file \
             git
 
       - name: Check out source
