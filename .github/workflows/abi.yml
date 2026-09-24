@@ -1,0 +1,56 @@
+name: C++ ABI Stability
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: "Optional baseline Git tag; empty selects the latest v* tag"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  abi:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Libabigail
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends abigail-tools
+
+      - name: Resolve ABI baseline
+        id: baseline
+        env:
+          REQUESTED_REF: ${{ inputs.baseline_ref }}
+        run: |
+          baseline="${REQUESTED_REF}"
+          if [[ -z "${baseline}" ]]; then
+            baseline="$(git tag --list 'v*' --sort=-version:refname | sed -n '1p')"
+          fi
+          echo "ref=${baseline}" >>"${GITHUB_OUTPUT}"
+
+      - name: Compare public ABI
+        run: >-
+          ./scripts/check_abi.sh
+          abi-report
+          "${{ steps.baseline.outputs.ref }}"
+
+      - name: Upload ABI evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: abi-${{ github.sha }}
+          path: abi-report
+          if-no-files-found: warn
+          retention-days: 30

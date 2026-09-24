@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+build
+dist
+wheelhouse
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+furiosa-build-release-lab-milestone*.zip

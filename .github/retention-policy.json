@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "actions": {
+    "release_handoff_days": 14,
+    "engineering_report_days": 30,
+    "disaster_recovery_report_days": 30,
+    "rollback_record_days": 90
+  },
+  "immutable_release": {
+    "assets": "indefinite",
+    "tags": "never-reuse",
+    "attestations": "indefinite"
+  },
+  "container": {
+    "release_digests": "indefinite",
+    "floating_aliases": ["latest", "major", "minor"],
+    "non_release_cleanup_days": 30
+  }
+}

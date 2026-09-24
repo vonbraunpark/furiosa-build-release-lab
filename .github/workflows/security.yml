@@ -1,0 +1,238 @@
+name: Security Enforcement
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "31 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Validate security policy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate policy and exception expiry
+        run: python3 scripts/validate_security_policy.py
+
+  dependency-review:
+    name: Dependency and license review
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Review pull-request dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
+          license-check: true
+          allow-licenses: >-
+            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BSL-1.0,
+            ISC, MIT, MPL-2.0, PSF-2.0, Python-2.0, Unlicense, Zlib
+
+      - name: Record non-PR applicability
+        if: github.event_name != 'pull_request'
+        run: echo "Dependency diff and license review applies to pull requests."
+
+  codeql:
+    name: CodeQL / ${{ matrix.language }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: c-cpp
+            build_mode: manual
+          - language: python
+            build_mode: none
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build_mode }}
+          config-file: ./.github/codeql-config.yml
+
+      - name: Build C++ database target
+        if: matrix.build_mode == 'manual'
+        run: |
+          cmake -S . -B build/codeql \
+            -DFASTMATH_BUILD_PYTHON=OFF \
+            -DFASTMATH_BUILD_TESTS=ON \
+            -DFASTMATH_BUILD_NATIVE_PACKAGE=ON \
+            -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build/codeql --parallel 2
+          ctest --test-dir build/codeql --output-on-failure
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
+
+  python-audit:
+    name: Python dependency audit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install pip-audit
+        run: python -m pip install pip-audit==2.10.1
+
+      - name: Audit project dependency resolution
+        run: pip-audit . --format=json --output=pip-audit.json
+
+      - name: Upload audit evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pip-audit-${{ github.sha }}
+          path: pip-audit.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  filesystem-scan:
+    name: Source, IaC, and secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Scan repository with Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          format: json
+          output: trivy-filesystem.json
+          exit-code: "0"
+
+      - name: Enforce repository security policy
+        run: >-
+          python3 scripts/evaluate_trivy_report.py
+          --policy security/policy.json
+          --exceptions security/exceptions.json
+          --report trivy-filesystem.json
+          --output filesystem-security-report.md
+
+      - name: Upload filesystem scan evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: filesystem-security-${{ github.sha }}
+          path: |
+            trivy-filesystem.json
+            filesystem-security-report.md
+          if-no-files-found: warn
+          retention-days: 30
+
+  container-scan:
+    name: Container vulnerability scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build local image
+        run: >-
+          docker build
+          --build-arg REPOSITORY_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}
+          --build-arg VCS_REF=${GITHUB_SHA}
+          --tag furiosa-build-release-lab:security
+          .
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: image
+          image-ref: furiosa-build-release-lab:security
+          scanners: vuln,secret
+          format: json
+          output: trivy-container.json
+          exit-code: "0"
+
+      - name: Enforce container security policy
+        run: >-
+          python3 scripts/evaluate_trivy_report.py
+          --policy security/policy.json
+          --exceptions security/exceptions.json
+          --report trivy-container.json
+          --output container-security-report.md
+
+      - name: Upload container scan evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-security-${{ github.sha }}
+          path: |
+            trivy-container.json
+            container-security-report.md
+          if-no-files-found: warn
+          retention-days: 30
+
+  security-gate:
+    name: Security gate
+    if: always()
+    needs:
+      - policy
+      - dependency-review
+      - codeql
+      - python-audit
+      - filesystem-scan
+      - container-scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every security control
+        env:
+          POLICY: ${{ needs.policy.result }}
+          DEPENDENCY_REVIEW: ${{ needs.dependency-review.result }}
+          CODEQL: ${{ needs.codeql.result }}
+          PYTHON_AUDIT: ${{ needs.python-audit.result }}
+          FILESYSTEM_SCAN: ${{ needs.filesystem-scan.result }}
+          CONTAINER_SCAN: ${{ needs.container-scan.result }}
+        run: |
+          for result in \
+            "${POLICY}" "${DEPENDENCY_REVIEW}" "${CODEQL}" \
+            "${PYTHON_AUDIT}" "${FILESYSTEM_SCAN}" "${CONTAINER_SCAN}"; do
+            test "${result}" = success
+          done
+          echo "All mandatory security controls passed."

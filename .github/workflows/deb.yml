@@ -1,0 +1,55 @@
+name: Ubuntu DEB Package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deb-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-verify-deb:
+    name: Build and verify Ubuntu 24.04 .deb
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+
+    steps:
+      - name: Install native build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            dpkg-dev \
+            git
+
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build and test DEB package
+        run: ./scripts/build_deb.sh
+
+      - name: Verify installed package with external consumer
+        run: ./scripts/verify_deb.sh
+
+      - name: Inspect package metadata
+        run: |
+          dpkg-deb --info dist/deb/*.deb
+          dpkg-deb --contents dist/deb/*.deb
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fastmath-ubuntu-24.04-amd64
+          path: dist/deb/*.deb
+          if-no-files-found: error
+          retention-days: 14

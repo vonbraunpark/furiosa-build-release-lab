@@ -1,0 +1,58 @@
+name: Reproducible Packages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "CMakeLists.txt"
+      - "pyproject.toml"
+      - "cpp/**"
+      - "python/**"
+      - "src/**"
+      - "cmake/**"
+      - "scripts/build_reproducible.sh"
+      - "scripts/compare_reproducible_builds.py"
+      - ".github/workflows/reproducibility.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reproducibility-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install build and comparison tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends diffoscope dpkg-dev
+          python -m pip install --upgrade build scikit-build-core pybind11
+
+      - name: Build twice and compare artifacts
+        run: ./scripts/build_reproducible.sh reproducibility-report
+
+      - name: Upload reproducibility evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reproducibility-${{ github.sha }}
+          path: reproducibility-report
+          if-no-files-found: warn
+          retention-days: 30

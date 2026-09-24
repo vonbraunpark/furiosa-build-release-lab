@@ -1,0 +1,76 @@
+name: Final Public Release Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Published immutable SemVer release to rehearse"
+        required: true
+        default: "v0.1.0"
+        type: string
+
+permissions:
+  attestations: read
+  checks: read
+  contents: read
+  packages: read
+
+concurrency:
+  group: final-rehearsal-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  rehearse:
+    name: Verify public release end to end
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out verification tooling
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check public and immutable repository settings
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test "$(gh api "repos/${GITHUB_REPOSITORY}" --jq .visibility)" = public
+          gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" >/dev/null
+
+      - name: Rehydrate and verify the published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          ./scripts/verify_disaster_recovery.sh
+          "${GITHUB_REPOSITORY}"
+          "${{ inputs.release_tag }}"
+          final-evidence/recovery-report.md
+
+      - name: Generate live portfolio evidence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python3 scripts/generate_portfolio_evidence.py
+          --repository "${GITHUB_REPOSITORY}"
+          --tag "${{ inputs.release_tag }}"
+          --recovery-report final-evidence/recovery-report.md
+          --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          --output final-evidence/FINAL_RELEASE_REPORT.md
+          --json-output final-evidence/portfolio-evidence.json
+
+      - name: Upload final portfolio evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: final-release-evidence-${{ inputs.release_tag }}-${{ github.run_id }}
+          path: final-evidence/
+          if-no-files-found: error
+          retention-days: 90

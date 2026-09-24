@@ -1,0 +1,30 @@
+name: Release Retention Audit
+
+on:
+  pull_request:
+    paths:
+      - ".github/retention-policy.json"
+      - ".github/workflows/**"
+      - "scripts/audit_retention_policy.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/retention-policy.json"
+      - ".github/workflows/**"
+      - "scripts/audit_retention_policy.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Audit machine-readable retention policy
+        run: python3 scripts/audit_retention_policy.py

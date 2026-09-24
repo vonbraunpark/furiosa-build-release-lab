@@ -1,0 +1,364 @@
+name: Unified Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKER_METADATA_SHORT_SHA_LENGTH: 12
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate version and changelog
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_kind: ${{ steps.version.outputs.release_kind }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate tag, package versions, and changelog
+        id: version
+        run: >-
+          python3 scripts/validate_version.py
+          --tag "${GITHUB_REF_NAME}"
+          --changelog CHANGELOG.md
+          --github-output "${GITHUB_OUTPUT}"
+
+  security-preflight:
+    name: Require security gate for release commit
+    needs: validate
+    runs-on: ubuntu-24.04
+    permissions:
+      checks: read
+      contents: read
+
+    steps:
+      - name: Verify successful security gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          count="$(
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
+              --jq '[.check_runs[] | select(.name == "Security gate" and .conclusion == "success")] | length'
+          )"
+          test "${count}" -ge 1
+
+  wheels:
+    name: Build manylinux wheels
+    needs: [validate, security-preflight]
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up build host Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==4.2.1
+
+      - name: Build and test manylinux wheels
+        run: python -m cibuildwheel --platform linux --output-dir wheelhouse
+
+      - name: Attest wheel build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: wheelhouse/*.whl
+
+      - name: Upload wheel handoff artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-wheels
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  deb:
+    name: Build and verify Ubuntu DEB
+    needs: [validate, security-preflight]
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Install native build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            dpkg-dev \
+            git
+
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build and test DEB package
+        run: ./scripts/build_deb.sh
+
+      - name: Verify installed package with external consumer
+        run: ./scripts/verify_deb.sh
+
+      - name: Attest DEB build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/deb/*.deb
+
+      - name: Upload DEB handoff artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-deb
+          path: dist/deb/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  container:
+    name: Build, test, and publish container
+    needs: [validate, wheels, deb]
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract image tags and OCI labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build local test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: furiosa-build-release-lab:test
+          build-args: |
+            REPOSITORY_URL=${{ github.server_url }}/${{ github.repository }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test image behavior and non-root runtime
+        env:
+          IMAGE_TAG: furiosa-build-release-lab:test
+        run: ./scripts/verify_container.sh
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish versioned image
+        id: publish
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            REPOSITORY_URL=${{ github.server_url }}/${{ github.repository }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest container build provenance
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify container build provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh attestation verify
+          "oci://${REGISTRY}/${IMAGE_NAME}@${{ steps.publish.outputs.digest }}"
+          --repo "${GITHUB_REPOSITORY}"
+          --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [validate, wheels, deb, container]
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      packages: read
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: release-wheels
+          path: release-assets
+
+      - name: Download DEB artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: release-deb
+          path: release-assets
+
+      - name: Log in to GHCR for verification
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate SPDX SBOM for release packages
+        uses: anchore/sbom-action@v0
+        with:
+          path: release-assets
+          format: spdx-json
+          output-file: release-assets/furiosa-build-release-lab-${{ needs.validate.outputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Validate assets and prepare release metadata
+        run: >-
+          python3 scripts/prepare_release.py
+          --tag "${GITHUB_REF_NAME}"
+          --assets-dir release-assets
+          --changelog CHANGELOG.md
+          --notes release-notes.md
+          --image "${REGISTRY}/${IMAGE_NAME}"
+          --digest "${{ needs.container.outputs.digest }}"
+
+      - name: Attest release metadata provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            release-assets/*.spdx.json
+            release-assets/SHA256SUMS
+
+      - name: Attest package SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            release-assets/*.whl
+            release-assets/*.deb
+          sbom-path: release-assets/furiosa-build-release-lab-${{ needs.validate.outputs.version }}.spdx.json
+
+      - name: Verify checksums and artifact attestations
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          ./scripts/verify_release.sh artifacts
+          "${GITHUB_REPOSITORY}"
+          "${GITHUB_REF_NAME}"
+          release-assets
+          "${REGISTRY}/${IMAGE_NAME}@${{ needs.container.outputs.digest }}"
+
+      - name: Create draft stable release with assets
+        if: needs.validate.outputs.is_prerelease == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          release-assets/*
+          --draft
+          --verify-tag
+          --title "${GITHUB_REF_NAME}"
+          --notes-file release-notes.md
+
+      - name: Create draft prerelease with assets
+        if: needs.validate.outputs.is_prerelease == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          release-assets/*
+          --draft
+          --prerelease
+          --verify-tag
+          --title "${GITHUB_REF_NAME}"
+          --notes-file release-notes.md
+
+      - name: Publish stable release
+        if: needs.validate.outputs.is_prerelease == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+
+      - name: Publish prerelease
+        if: needs.validate.outputs.is_prerelease == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release edit "${GITHUB_REF_NAME}"
+          --draft=false
+          --prerelease
+          --latest=false
+
+      - name: Verify published release and every asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          ./scripts/verify_release.sh release
+          "${GITHUB_REPOSITORY}"
+          "${GITHUB_REF_NAME}"
+          release-assets
+          "${REGISTRY}/${IMAGE_NAME}@${{ needs.container.outputs.digest }}"

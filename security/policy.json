@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "vulnerabilities": {
+    "block_critical": true,
+    "block_high_with_fix": true,
+    "block_unfixed_high": false
+  },
+  "misconfigurations": {
+    "block_severities": ["CRITICAL", "HIGH"]
+  },
+  "secrets": {
+    "block_all": true
+  },
+  "licenses": {
+    "allowed": [
+      "0BSD",
+      "Apache-2.0",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "BSL-1.0",
+      "ISC",
+      "MIT",
+      "MPL-2.0",
+      "PSF-2.0",
+      "Python-2.0",
+      "Unlicense",
+      "Zlib"
+    ]
+  },
+  "exceptions": {
+    "maximum_days": 30,
+    "required_fields": ["id", "package", "owner", "reason", "created", "expires"]
+  }
+}
