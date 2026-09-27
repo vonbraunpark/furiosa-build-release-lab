@@ -44,7 +44,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           test "$(gh api "repos/${GITHUB_REPOSITORY}" --jq .visibility)" = public
-          gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" >/dev/null
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${{ inputs.release_tag }}" --jq .immutable)" = true
 
       - name: Rehydrate and verify the published release
         env:
