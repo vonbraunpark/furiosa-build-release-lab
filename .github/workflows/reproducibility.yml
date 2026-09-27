@@ -4,16 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    paths:
-      - "CMakeLists.txt"
-      - "pyproject.toml"
-      - "cpp/**"
-      - "python/**"
-      - "src/**"
-      - "cmake/**"
-      - "scripts/build_reproducible.sh"
-      - "scripts/compare_reproducible_builds.py"
-      - ".github/workflows/reproducibility.yml"
   workflow_dispatch:
 
 permissions:
