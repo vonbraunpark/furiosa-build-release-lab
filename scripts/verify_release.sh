@@ -67,7 +67,23 @@ verify_artifacts() {
 }
 
 verify_release() {
-  gh release verify "${tag}" --repo "${repository}"
+  local attempt
+  local max_attempts="${RELEASE_VERIFY_MAX_ATTEMPTS:-20}"
+  local retry_delay="${RELEASE_VERIFY_RETRY_DELAY_SECONDS:-15}"
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if gh release verify "${tag}" --repo "${repository}"; then
+      break
+    fi
+
+    if (( attempt == max_attempts )); then
+      echo "release attestation verification failed after ${max_attempts} attempts: ${tag}" >&2
+      return 1
+    fi
+
+    echo "release attestation not ready; retrying in ${retry_delay}s (${attempt}/${max_attempts})" >&2
+    sleep "${retry_delay}"
+  done
 
   shopt -s nullglob
   local assets=("${assets_dir}"/*)
