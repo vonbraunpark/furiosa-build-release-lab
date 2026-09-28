@@ -80,9 +80,9 @@ def main() -> None:
     if repository.get("visibility") != "public" or repository.get("private"):
         raise SystemExit("portfolio evidence requires a public repository")
 
-    # This endpoint returns success only when immutable releases are enabled.
-    gh_json(f"repos/{args.repository}/immutable-releases")
     release = gh_json(f"repos/{args.repository}/releases/tags/{args.tag}")
+    if release.get("immutable") is not True:
+        raise SystemExit("release is not immutable")
     if release.get("draft"):
         raise SystemExit("release is still a draft")
 

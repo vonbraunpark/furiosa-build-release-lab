@@ -39,7 +39,7 @@ def main() -> None:
     rehearsal = (ROOT / ".github/workflows/final-rehearsal.yml").read_text(encoding="utf-8")
     for marker in (
         "workflow_dispatch:",
-        "immutable-releases",
+        "releases/tags/",
         "verify_disaster_recovery.sh",
         "generate_portfolio_evidence.py",
         "retention-days: 90",

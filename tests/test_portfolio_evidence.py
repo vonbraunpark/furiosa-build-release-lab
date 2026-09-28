@@ -42,10 +42,9 @@ class PortfolioEvidenceTest(unittest.TestCase):
                     "html_url": "https://github.com/example/furiosa-build-release-lab",
                     "default_branch": "main",
                 }
-            if endpoint.endswith("/immutable-releases"):
-                return {"enabled": True}
             if endpoint.endswith("/releases/tags/v0.1.0"):
                 return {
+                    "immutable": True,
                     "draft": False,
                     "html_url": "https://github.com/example/furiosa-build-release-lab/releases/tag/v0.1.0",
                     "assets": assets,
@@ -79,6 +78,24 @@ class PortfolioEvidenceTest(unittest.TestCase):
             evidence = json.loads(machine.read_text(encoding="utf-8"))
             self.assertEqual(evidence["release_commit"], commit)
             self.assertEqual(evidence["security_gate"], "PASS")
+
+    def test_rejects_mutable_release(self) -> None:
+        argv = [
+            "generate_portfolio_evidence.py",
+            "--repository", "example/furiosa-build-release-lab",
+            "--tag", "v0.1.0",
+            "--recovery-report", "unused",
+            "--run-url", "https://github.com/example/repo/actions/runs/1",
+            "--output", "unused",
+            "--json-output", "unused",
+        ]
+        responses = [
+            {"visibility": "public", "private": False},
+            {"immutable": False},
+        ]
+        with patch.object(MODULE, "gh_json", side_effect=responses), patch.object(sys, "argv", argv):
+            with self.assertRaisesRegex(SystemExit, "release is not immutable"):
+                MODULE.main()
 
     def test_rejects_missing_python_wheel(self) -> None:
         with self.assertRaises(SystemExit):
