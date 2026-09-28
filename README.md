@@ -4,6 +4,10 @@ A production-oriented build and release lab demonstrating a C++17 library,
 CMake builds, pybind11 Python bindings, native Python wheel packaging, and an
 installable Ubuntu `.deb` development package plus a versioned OCI container.
 
+## Verified release
+
+[v0.1.0 release](https://github.com/vonbraunpark/furiosa-build-release-lab/releases/tag/v0.1.0) · [Final rehearsal](https://github.com/vonbraunpark/furiosa-build-release-lab/actions/runs/36389229608) · [Verification details](docs/PORTFOLIO.md)
+
 ## Implemented pipeline
 
 ```text
